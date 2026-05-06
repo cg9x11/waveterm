@@ -121,6 +121,7 @@ type WshRpcInterface interface {
 	DismissWshFailCommand(ctx context.Context, connName string) error
 	ConnUpdateWshCommand(ctx context.Context, remoteInfo RemoteInfo) (bool, error)
 	FindGitBashCommand(ctx context.Context, rescan bool) (string, error)
+	FindLazygitCommand(ctx context.Context, rescan bool) (*CommandFindLazygitRtnData, error)
 	ConnServerInitCommand(ctx context.Context, data CommandConnServerInitData) error
 	NotifySystemResumeCommand(ctx context.Context) error
 
@@ -389,6 +390,14 @@ type RemoteInfo struct {
 	ClientVersion string `json:"clientversion"`
 	Shell         string `json:"shell"`
 	HomeDir       string `json:"homedir"`
+}
+
+type CommandFindLazygitRtnData struct {
+	Found     bool   `json:"found"`
+	Path      string `json:"path,omitempty"`
+	Dir       string `json:"dir,omitempty"`
+	PathKey   string `json:"pathkey,omitempty"`
+	PathValue string `json:"pathvalue,omitempty"`
 }
 
 const (

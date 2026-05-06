@@ -424,6 +424,12 @@ func FindGitBashCommand(w *wshutil.WshRpc, data bool, opts *wshrpc.RpcOpts) (str
 	return resp, err
 }
 
+// command "findlazygit", wshserver.FindLazygitCommand
+func FindLazygitCommand(w *wshutil.WshRpc, data bool, opts *wshrpc.RpcOpts) (*wshrpc.CommandFindLazygitRtnData, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandFindLazygitRtnData](w, "findlazygit", data, opts)
+	return resp, err
+}
+
 // command "focuswindow", wshserver.FocusWindowCommand
 func FocusWindowCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "focuswindow", data, opts)

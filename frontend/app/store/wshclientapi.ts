@@ -426,6 +426,12 @@ export class RpcApiType {
         return client.wshRpcCall("findgitbash", data, opts);
     }
 
+    // command "findlazygit" [call]
+    FindLazygitCommand(client: WshClient, data: boolean, opts?: RpcOpts): Promise<CommandFindLazygitRtnData> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "findlazygit", data, opts);
+        return client.wshRpcCall("findlazygit", data, opts);
+    }
+
     // command "focuswindow" [call]
     FocusWindowCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "focuswindow", data, opts);

@@ -50,5 +50,16 @@
                 "view": "processviewer"
             }
         }
+    },
+    "defwidget@git": {
+        "display:order": 0,
+        "icon": "solid@code-branch",
+        "color": "#ffffff",
+        "label": "git",
+        "blockdef": {
+            "meta": {
+                "view": "gitlauncher"
+            }
+        }
     }
 }

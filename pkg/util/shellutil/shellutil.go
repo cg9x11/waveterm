@@ -63,6 +63,7 @@ var macUserShellOnce = &sync.Once{}
 var userShellRegexp = regexp.MustCompile(`^UserShell: (.*)$`)
 
 var gitBashCache = utilds.MakeSyncCache(findInstalledGitBash)
+var lazygitCache = utilds.MakeSyncCache(findInstalledLazygit)
 
 const DefaultShellPath = "/bin/bash"
 
@@ -166,6 +167,11 @@ func FindGitBash(config *wconfig.FullConfigType, rescan bool) string {
 	return path
 }
 
+func FindLazygit(rescan bool) string {
+	path, _ := lazygitCache.Get(rescan)
+	return path
+}
+
 func findInstalledGitBash() (string, error) {
 	// Try PATH first (skip system32, and only accept if in a Git directory)
 	pathEnv := os.Getenv("PATH")
@@ -209,6 +215,71 @@ func findInstalledGitBash() (string, error) {
 	}
 
 	return "", nil
+}
+
+func findInstalledLazygit() (string, error) {
+	if path, err := exec.LookPath("lazygit"); err == nil {
+		if filepath.IsAbs(path) {
+			return path, nil
+		}
+		if absPath, absErr := filepath.Abs(path); absErr == nil {
+			return absPath, nil
+		}
+		return path, nil
+	}
+
+	if runtime.GOOS != "windows" {
+		return "", nil
+	}
+
+	userProfile := os.Getenv("USERPROFILE")
+	if userProfile != "" {
+		scoopPath := filepath.Join(userProfile, "scoop", "apps", "lazygit", "current", "lazygit.exe")
+		if _, err := os.Stat(scoopPath); err == nil {
+			return scoopPath, nil
+		}
+	}
+
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData != "" {
+		localPath := filepath.Join(localAppData, "Programs", "lazygit", "lazygit.exe")
+		if _, err := os.Stat(localPath); err == nil {
+			return localPath, nil
+		}
+		if matches, err := filepath.Glob(filepath.Join(localAppData, "Microsoft", "WinGet", "Packages", "JesseDuffield.lazygit*", "lazygit.exe")); err == nil {
+			for _, match := range matches {
+				if _, statErr := os.Stat(match); statErr == nil {
+					return match, nil
+				}
+			}
+		}
+	}
+
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles != "" {
+		programFilesPath := filepath.Join(programFiles, "lazygit", "lazygit.exe")
+		if _, err := os.Stat(programFilesPath); err == nil {
+			return programFilesPath, nil
+		}
+	}
+
+	return "", nil
+}
+
+func GetPathVarNameAndValue() (string, string) {
+	defaultKey := "PATH"
+	if runtime.GOOS == "windows" {
+		defaultKey = "Path"
+	}
+
+	for _, envStr := range os.Environ() {
+		envKey := GetEnvStrKey(envStr)
+		if strings.EqualFold(envKey, "PATH") {
+			return envKey, strings.TrimPrefix(envStr, envKey+"=")
+		}
+	}
+
+	return defaultKey, os.Getenv(defaultKey)
 }
 
 func DefaultTermSize() waveobj.TermSize {

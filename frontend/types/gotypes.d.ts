@@ -426,6 +426,15 @@ declare global {
         streammeta: StreamMeta;
     };
 
+    // wshrpc.CommandFindLazygitRtnData
+    type CommandFindLazygitRtnData = {
+        found: boolean;
+        path?: string;
+        dir?: string;
+        pathkey?: string;
+        pathvalue?: string;
+    };
+
     // wshrpc.CommandGetMetaData
     type CommandGetMetaData = {
         oref: ORef;

@@ -852,6 +852,21 @@ func (ws *WshServer) FindGitBashCommand(ctx context.Context, rescan bool) (strin
 	return shellutil.FindGitBash(&fullConfig, rescan), nil
 }
 
+func (ws *WshServer) FindLazygitCommand(ctx context.Context, rescan bool) (*wshrpc.CommandFindLazygitRtnData, error) {
+	path := shellutil.FindLazygit(rescan)
+	pathKey, pathValue := shellutil.GetPathVarNameAndValue()
+	rtn := &wshrpc.CommandFindLazygitRtnData{
+		Found:     path != "",
+		Path:      path,
+		PathKey:   pathKey,
+		PathValue: pathValue,
+	}
+	if path != "" {
+		rtn.Dir = filepath.Dir(path)
+	}
+	return rtn, nil
+}
+
 func waveFileToWaveFileInfo(wf *filestore.WaveFile) *wshrpc.WaveFileInfo {
 	return &wshrpc.WaveFileInfo{
 		ZoneId:    wf.ZoneId,
