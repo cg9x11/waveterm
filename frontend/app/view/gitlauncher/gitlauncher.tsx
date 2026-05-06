@@ -3,6 +3,8 @@
 
 import type { BlockNodeModel } from "@/app/block/blocktypes";
 import { replaceBlock } from "@/app/store/global";
+import { makeORef } from "@/app/store/wos";
+import { makeFeBlockRouteId } from "@/app/store/wshrouter";
 import type { TabModel } from "@/app/store/tab-model";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { WaveEnv, WaveEnvSubset, useWaveEnv } from "@/app/waveenv/waveenv";
@@ -14,6 +16,7 @@ import * as React from "react";
 const MaxScanDepth = 3;
 const MaxScanDirs = 300;
 const MaxListEntries = 250;
+const MaxPromptProbeLines = 48;
 
 type RootCandidate = {
     path: string;
@@ -51,6 +54,8 @@ type GitLauncherEnv = WaveEnvSubset<{
         FileJoinCommand: WaveEnv["rpc"]["FileJoinCommand"];
         FileListCommand: WaveEnv["rpc"]["FileListCommand"];
         FindLazygitCommand: WaveEnv["rpc"]["FindLazygitCommand"];
+        GetRTInfoCommand: WaveEnv["rpc"]["GetRTInfoCommand"];
+        TermGetScrollbackLinesCommand: WaveEnv["rpc"]["TermGetScrollbackLinesCommand"];
     };
 }>;
 
@@ -140,6 +145,52 @@ function dedupeStrings(values: string[]): string[] {
     return result;
 }
 
+function sanitizePromptLine(line: string): string {
+    if (isBlank(line)) {
+        return "";
+    }
+    return line
+        .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+        .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+        .trim();
+}
+
+function extractPromptPathCandidates(lines: string[], platform: NodeJS.Platform): string[] {
+    const candidates: string[] = [];
+
+    function addMatches(line: string, patterns: RegExp[]) {
+        for (const pattern of patterns) {
+            const match = line.match(pattern);
+            const value = stripTrailingSeparators(match?.[1]?.trim() ?? "");
+            if (!isBlank(value)) {
+                candidates.push(value);
+            }
+        }
+    }
+
+    for (let index = lines.length - 1; index >= 0; index--) {
+        const line = sanitizePromptLine(lines[index] ?? "");
+        if (isBlank(line)) {
+            continue;
+        }
+
+        if (platform === "win32") {
+            addMatches(line, [
+                /^PS\s+(.+?)>\s*$/,
+                /^([a-zA-Z]:[\\/].*?)>\s*$/,
+                /(?:^|\s)([a-zA-Z]:[\\/].+?)>\s*$/,
+                /(?:^|\s)(~[\\/].+?)>\s*$/,
+            ]);
+        }
+
+        addMatches(line, [
+            /(?:^|[\s\]])(?:[^@\s]+@[^:\s]+:)?([~\/][^\r\n$#%>]*)[$#%>]\s*$/,
+        ]);
+    }
+
+    return dedupeStrings(candidates);
+}
+
 function compareRoots(a: RootCandidate, b: RootCandidate): number {
     if (a.activeTab !== b.activeTab) {
         return a.activeTab ? -1 : 1;
@@ -218,6 +269,105 @@ async function hasGitMarker(rpc: GitLauncherEnv["rpc"], dirPath: string): Promis
     return gitInfo != null && !gitInfo.notfound && isBlank(gitInfo.staterror);
 }
 
+async function resolveDirectoryCandidate(rpc: GitLauncherEnv["rpc"], path: string): Promise<string> {
+    if (isBlank(path)) {
+        return "";
+    }
+    const info = await getFileInfo(rpc, path);
+    if (info == null || info.notfound || !isBlank(info.staterror)) {
+        return "";
+    }
+    return stripTrailingSeparators(info.isdir ? info.path : info.dir);
+}
+
+async function getRuntimeCurrentDirectory(rpc: GitLauncherEnv["rpc"], blockId: string): Promise<string> {
+    try {
+        const rtInfo = await rpc.GetRTInfoCommand(
+            TabRpcClient,
+            { oref: makeORef("block", blockId) },
+            { timeout: 2500 }
+        );
+        return typeof rtInfo?.["shell:curcwd"] === "string" ? rtInfo["shell:curcwd"] : "";
+    } catch {
+        return "";
+    }
+}
+
+async function getPromptCurrentDirectory(
+    rpc: GitLauncherEnv["rpc"],
+    blockId: string,
+    platform: NodeJS.Platform
+): Promise<string> {
+    try {
+        const scrollback = await rpc.TermGetScrollbackLinesCommand(
+            TabRpcClient,
+            {
+                linestart: 0,
+                lineend: MaxPromptProbeLines,
+                lastcommand: false,
+            },
+            { route: makeFeBlockRouteId(blockId), timeout: 2500 }
+        );
+        const promptCandidates = extractPromptPathCandidates(scrollback?.lines ?? [], platform);
+        for (const promptCandidate of promptCandidates) {
+            const resolvedDir = await resolveDirectoryCandidate(rpc, promptCandidate);
+            if (!isBlank(resolvedDir)) {
+                return resolvedDir;
+            }
+        }
+    } catch {
+        // Ignore per-block prompt probing failures and continue with other fallbacks.
+    }
+    return "";
+}
+
+async function resolveWorkspaceRootPath(
+    rpc: GitLauncherEnv["rpc"],
+    block: BlocksListEntry,
+    platform: NodeJS.Platform
+): Promise<string> {
+    if (!isLocalConnName(block.meta?.connection)) {
+        return "";
+    }
+
+    const explicitCwd = typeof block.meta?.["cmd:cwd"] === "string" ? block.meta["cmd:cwd"] : "";
+    const explicitDir = await resolveDirectoryCandidate(rpc, explicitCwd);
+    if (!isBlank(explicitDir)) {
+        return explicitDir;
+    }
+
+    if (block.meta?.view === "preview") {
+        const previewPath = typeof block.meta?.file === "string" ? block.meta.file : "";
+        const previewDir = await resolveDirectoryCandidate(rpc, previewPath);
+        if (!isBlank(previewDir)) {
+            return previewDir;
+        }
+    }
+
+    if (block.meta?.view !== "term") {
+        return "";
+    }
+
+    const runtimeCwd = await getRuntimeCurrentDirectory(rpc, block.blockid);
+    const runtimeDir = await resolveDirectoryCandidate(rpc, runtimeCwd);
+    if (!isBlank(runtimeDir)) {
+        return runtimeDir;
+    }
+
+    return getPromptCurrentDirectory(rpc, block.blockid, platform);
+}
+
+function getRootLabel(block: BlocksListEntry, activeTabId: string): string {
+    const isActiveTab = block.tabid === activeTabId;
+    if (block.meta?.view === "term") {
+        return isActiveTab ? "active terminal" : "open terminal";
+    }
+    if (block.meta?.view === "preview") {
+        return isActiveTab ? "active file" : "open file";
+    }
+    return isActiveTab ? "active tab" : "open widget";
+}
+
 async function findEnclosingRepoRoot(
     rpc: GitLauncherEnv["rpc"],
     startPath: string,
@@ -258,28 +408,43 @@ async function collectWorkspaceRoots(
     const blocks = await rpc.BlocksListCommand(TabRpcClient, { workspaceid: workspaceId }, { timeout: 8000 });
     const rootMap = new Map<string, RootCandidate>();
 
-    for (const block of blocks ?? []) {
-        const cwd = typeof block.meta?.["cmd:cwd"] === "string" ? block.meta["cmd:cwd"] : "";
-        if (isBlank(cwd) || !isLocalConnName(block.meta?.connection)) {
+    const resolvedRoots = await Promise.all(
+        (blocks ?? []).map(async (block) => {
+            const rootPath = await resolveWorkspaceRootPath(rpc, block, platform);
+            if (isBlank(rootPath)) {
+                return null;
+            }
+            return {
+                path: rootPath,
+                activeTab: block.tabid === activeTabId,
+                label: getRootLabel(block, activeTabId),
+            };
+        })
+    );
+
+    for (const resolvedRoot of resolvedRoots) {
+        if (resolvedRoot == null) {
             continue;
         }
-        const normalizedCwd = stripTrailingSeparators(cwd);
+        const normalizedCwd = stripTrailingSeparators(resolvedRoot.path);
         const rootKey = normalizePathKey(normalizedCwd, platform);
-        const isActiveTab = block.tabid === activeTabId;
         const existing = rootMap.get(rootKey);
         if (existing == null) {
             rootMap.set(rootKey, {
                 path: normalizedCwd,
-                activeTab: isActiveTab,
+                activeTab: resolvedRoot.activeTab,
                 hits: 1,
-                label: isActiveTab ? "active tab" : "open terminal",
+                label: resolvedRoot.label,
             });
             continue;
         }
-        existing.activeTab = existing.activeTab || isActiveTab;
+        existing.activeTab = existing.activeTab || resolvedRoot.activeTab;
         existing.hits += 1;
+        if (resolvedRoot.label.includes("terminal") && !existing.label.includes("terminal")) {
+            existing.label = resolvedRoot.activeTab ? "active terminal" : "open terminal";
+        }
         if (existing.activeTab) {
-            existing.label = "active tab";
+            existing.label = existing.label.includes("terminal") ? "active terminal" : "active file";
         }
     }
 
@@ -342,7 +507,7 @@ async function scanRepoRootsBelow(
                 queue.push({ path: stripTrailingSeparators(entry.path), depth: current.depth + 1 });
             }
         } catch (error) {
-            errors.push(`Khong doc duoc ${currentPath}: ${String(error)}`);
+            errors.push(`Could not read ${currentPath}: ${String(error)}`);
         }
     }
 
@@ -618,7 +783,7 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
 
     async function handleManualScan() {
         if (isBlank(manualRoot)) {
-            setStatusMessage("Nhap mot thu muc de quet repo.");
+            setStatusMessage("Enter a folder to scan for repositories.");
             return;
         }
         setManualScanBusy(true);
@@ -651,7 +816,7 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                         "cmd:shell": false,
                         "cmd:cwd": repo.root,
                         "cmd:env": buildLazygitEnv(lazygitInfo, env.platform),
-                        "frame:title": `Git · ${repo.name}`,
+                        "frame:title": `Git - ${repo.name}`,
                         "frame:icon": "solid@code-branch",
                         "icon:color": "#ffffff",
                     },
@@ -685,12 +850,13 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
             </div>
 
             <div className="flex-1 overflow-auto">
-                <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 p-3">
+                <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 p-3">
                     {!lazygitInfo?.found && !loading ? (
                         <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-3 text-sm text-amber-100">
-                            <div className="font-medium">Khong tim thay lazygit tren may nay.</div>
+                            <div className="font-medium">Lazygit is not installed on this machine.</div>
                             <div className="mt-1 text-xs text-amber-100/80">
-                                Cai dat lazygit roi bam Refresh. Widget nay tu dong kiem tra lai thay vi dung path cung.
+                                Install `lazygit`, then press Refresh. This widget re-checks automatically instead of
+                                relying on a hardcoded path.
                             </div>
                         </div>
                     ) : null}
@@ -701,7 +867,8 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                                 Scan Root
                             </div>
                             <div className="text-xs text-secondary">
-                                Quet them repo ben trong thu muc workspace hien tai cua cac terminal dang mo.
+                                Scan additional repositories inside folders currently used by open terminals or file
+                                previews in this workspace.
                             </div>
                         </div>
                         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
@@ -709,7 +876,7 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                                 type="text"
                                 value={manualRoot}
                                 onChange={(event) => setManualRoot(event.target.value)}
-                                placeholder="Nhap thu muc de quet repo..."
+                                placeholder="Enter a folder to scan..."
                                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-primary outline-none transition-colors placeholder:text-secondary focus:border-white/20"
                                 onKeyDown={(event) => {
                                     if (event.key === "Enter") {
@@ -749,7 +916,7 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
 
                     {loading ? (
                         <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-10 text-center text-sm text-secondary">
-                            Dang kiem tra lazygit va tim repo trong workspace...
+                            Checking for `lazygit` and discovering repositories in the workspace...
                         </div>
                     ) : null}
 
@@ -763,19 +930,21 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
 
                     {autoTruncated ? (
                         <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-secondary">
-                            Quet tu dong duoc gioi han o {MaxScanDirs} thu muc, do sau {MaxScanDepth} cap de block nay van nhe va co the co gian.
+                            Automatic scanning is capped at {MaxScanDirs} folders and {MaxScanDepth} levels deep so the
+                            widget stays lightweight and resizable.
                         </div>
                     ) : null}
 
                     {noWorkspaceRoots ? (
                         <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-4 text-sm text-secondary">
-                            Khong tim thay `cmd:cwd` local tu cac terminal dang mo trong workspace hien tai. Ban van co the nhap thu muc o tren de quet tay.
+                            Could not resolve any local working directories from open terminals or file previews in the
+                            current workspace. You can still enter a folder above to scan manually.
                         </div>
                     ) : null}
 
                     {noReposFound ? (
                         <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-8 text-center text-sm text-secondary">
-                            Khong tim thay repo nao tu workspace hien tai.
+                            No repositories were found from the current workspace.
                         </div>
                     ) : null}
 

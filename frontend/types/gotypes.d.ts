@@ -1282,6 +1282,7 @@ declare global {
         "tsunami:appmeta"?: AppMeta;
         "tsunami:schemas"?: any;
         "shell:hascurcwd"?: boolean;
+        "shell:curcwd"?: string;
         "shell:state"?: string;
         "shell:type"?: string;
         "shell:version"?: string;

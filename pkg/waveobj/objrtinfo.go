@@ -8,6 +8,7 @@ type ObjRTInfo struct {
 	TsunamiSchemas any `json:"tsunami:schemas,omitempty"`
 
 	ShellHasCurCwd       bool   `json:"shell:hascurcwd,omitempty"`
+	ShellCurCwd          string `json:"shell:curcwd,omitempty"`
 	ShellState           string `json:"shell:state,omitempty"`
 	ShellType            string `json:"shell:type,omitempty"`
 	ShellVersion         string `json:"shell:version,omitempty"`

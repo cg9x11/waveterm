@@ -268,7 +268,7 @@ export function handleOsc7Command(data: string, blockId: string, loaded: boolean
                 meta: { "cmd:cwd": pathPart },
             });
 
-            const rtInfo = { "shell:hascurcwd": true };
+            const rtInfo = { "shell:hascurcwd": true, "shell:curcwd": pathPart };
             const rtInfoData: CommandSetRTInfoData = {
                 oref: WOS.makeORef("block", blockId),
                 data: rtInfo,
