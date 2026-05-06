@@ -48,6 +48,7 @@ type WshRpcInterface interface {
 	GetJwtPublicKeyCommand(ctx context.Context) (string, error) // (special) gets the public JWT signing key
 
 	MessageCommand(ctx context.Context, data CommandMessageData) error
+	AgreeTosCommand(ctx context.Context) error
 	GetMetaCommand(ctx context.Context, data CommandGetMetaData) (waveobj.MetaMapType, error)
 	SetMetaCommand(ctx context.Context, data CommandSetMetaData) error
 	ControllerInputCommand(ctx context.Context, data CommandBlockInputData) error
@@ -94,8 +95,17 @@ type WshRpcInterface interface {
 	FetchSuggestionsCommand(ctx context.Context, data FetchSuggestionsData) (*FetchSuggestionsResponse, error)
 	DisposeSuggestionsCommand(ctx context.Context, widgetId string) error
 	GetTabCommand(ctx context.Context, tabId string) (*waveobj.Tab, error)
+	GetClientCommand(ctx context.Context) (*waveobj.Client, error)
+	GetWorkspaceCommand(ctx context.Context, workspaceId string) (*waveobj.Workspace, error)
+	GetWindowCommand(ctx context.Context, windowId string) (*waveobj.Window, error)
+	CloseWindowCommand(ctx context.Context, windowId string) error
+	CreateWorkspaceCommand(ctx context.Context, data CommandCreateWorkspaceData) (string, error)
 	UpdateTabNameCommand(ctx context.Context, tabId string, newName string) error
 	UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error
+	CreateTabCommand(ctx context.Context, data CommandCreateTabData) (string, error)
+	SetActiveTabCommand(ctx context.Context, data CommandSetActiveTabData) error
+	CloseTabCommand(ctx context.Context, data CommandCloseTabData) (*CommandCloseTabRtnData, error)
+	SwitchWorkspaceCommand(ctx context.Context, data CommandSwitchWorkspaceData) (*waveobj.Workspace, error)
 	GetAllBadgesCommand(ctx context.Context) ([]baseds.BadgeEvent, error)
 
 	// connection functions
@@ -134,6 +144,8 @@ type WshRpcInterface interface {
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
 	NotifyCommand(ctx context.Context, notificationOptions WaveNotificationOptions) error
 	FocusWindowCommand(ctx context.Context, windowId string) error
+	OpenNewWindowCommand(ctx context.Context, workspaceId string) (string, error)
+	CaptureWindowScreenshotCommand(ctx context.Context, windowId string) (string, error)
 	ElectronEncryptCommand(ctx context.Context, data CommandElectronEncryptData) (*CommandElectronEncryptRtnData, error)
 	ElectronDecryptCommand(ctx context.Context, data CommandElectronDecryptData) (*CommandElectronDecryptRtnData, error)
 	NetworkOnlineCommand(ctx context.Context) (bool, error)
@@ -341,7 +353,6 @@ type CommandEventReadHistoryData struct {
 	MaxItems int    `json:"maxitems"`
 }
 
-
 type CpuDataRequest struct {
 	Id    string `json:"id"`
 	Count int    `json:"count"`
@@ -480,6 +491,40 @@ type WaveInfoData struct {
 type WorkspaceInfoData struct {
 	WindowId      string             `json:"windowid"`
 	WorkspaceData *waveobj.Workspace `json:"workspacedata"`
+}
+
+type CommandCreateTabData struct {
+	WorkspaceId string `json:"workspaceid"`
+	TabName     string `json:"tabname,omitempty"`
+	ActivateTab bool   `json:"activatetab,omitempty"`
+}
+
+type CommandCreateWorkspaceData struct {
+	Name          string `json:"name,omitempty"`
+	Icon          string `json:"icon,omitempty"`
+	Color         string `json:"color,omitempty"`
+	ApplyDefaults bool   `json:"applydefaults,omitempty"`
+}
+
+type CommandSetActiveTabData struct {
+	WorkspaceId string `json:"workspaceid"`
+	TabId       string `json:"tabid"`
+}
+
+type CommandCloseTabData struct {
+	WorkspaceId  string `json:"workspaceid"`
+	TabId        string `json:"tabid"`
+	FromElectron bool   `json:"fromelectron,omitempty"`
+}
+
+type CommandCloseTabRtnData struct {
+	CloseWindow    bool   `json:"closewindow,omitempty"`
+	NewActiveTabId string `json:"newactivetabid,omitempty"`
+}
+
+type CommandSwitchWorkspaceData struct {
+	WindowId    string `json:"windowid"`
+	WorkspaceId string `json:"workspaceid"`
 }
 
 type BlocksListRequest struct {

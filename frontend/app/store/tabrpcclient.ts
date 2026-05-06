@@ -3,6 +3,8 @@
 
 import { WaveAIModel } from "@/app/aipanel/waveai-model";
 import { getApi, getBlockComponentModel, getConnStatusAtom, globalStore, WOS } from "@/app/store/global";
+import { globalRefocus } from "@/app/store/keymodel";
+import { modalsModel } from "@/app/store/modalmodel";
 import type { TermViewModel } from "@/app/view/term/term-model";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab } from "@/layout/index";
@@ -173,5 +175,13 @@ export class TabClient extends WshClient {
         }
 
         return result;
+    }
+
+    async handle_dismissonboarding(rh: RpcResponseHelper): Promise<void> {
+        globalStore.set(modalsModel.newInstallOnboardingOpen, false);
+        globalStore.set(modalsModel.upgradeOnboardingOpen, false);
+        setTimeout(() => {
+            globalRefocus();
+        }, 10);
     }
 }

@@ -4,9 +4,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
@@ -35,6 +37,7 @@ var RpcClientRouteId string
 var UsingTermWshMode bool
 var blockArg string
 var WshExitCode int
+var InitialCwd string
 
 type WrappedWriter struct {
 	dest io.Writer
@@ -76,6 +79,35 @@ func WriteStdout(fmtStr string, args ...interface{}) {
 	WrappedStdout.Write([]byte(fmt.Sprintf(fmtStr, args...)))
 }
 
+func writeJSONStdout(v any) error {
+	enc := json.NewEncoder(WrappedStdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func writeJSONLineStdout(v any) error {
+	enc := json.NewEncoder(WrappedStdout)
+	return enc.Encode(v)
+}
+
+func resolvePathFromInitialCwd(pathStr string) (string, error) {
+	if pathStr == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if filepath.IsAbs(pathStr) {
+		return filepath.Clean(pathStr), nil
+	}
+	base := InitialCwd
+	if base == "" {
+		var err error
+		base, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("determining current working directory: %w", err)
+		}
+	}
+	return filepath.Clean(filepath.Join(base, pathStr)), nil
+}
+
 func OutputHelpMessage(cmd *cobra.Command) {
 	cmd.SetOutput(WrappedStderr)
 	cmd.Help()
@@ -85,7 +117,7 @@ func OutputHelpMessage(cmd *cobra.Command) {
 func preRunSetupRpcClient(cmd *cobra.Command, args []string) error {
 	jwtToken := os.Getenv(wshutil.WaveJwtTokenVarName)
 	if jwtToken == "" {
-		return fmt.Errorf("wsh must be run inside a Wave-managed SSH session (WAVETERM_JWT not found)")
+		return fmt.Errorf("wsh requires %s in the environment; run inside Wave or provide a valid automation token", wshutil.WaveJwtTokenVarName)
 	}
 	err := setupRpcClient(nil, jwtToken)
 	if err != nil {
@@ -242,6 +274,9 @@ func Execute() {
 			wshutil.DoShutdown("", WshExitCode, false)
 		}
 	}()
+	if cwd, err := os.Getwd(); err == nil {
+		InitialCwd = cwd
+	}
 	rootCmd.PersistentFlags().StringVarP(&blockArg, "block", "b", "", "for commands which require a block id")
 	err := rootCmd.Execute()
 	if err != nil {

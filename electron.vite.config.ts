@@ -77,13 +77,18 @@ export default defineConfig({
         root: ".",
         build: {
             target: NODE,
+            externalizeDeps: false,
             rollupOptions: {
                 input: {
                     index: "emain/emain.ts",
                 },
+                output: {
+                    format: "cjs",
+                    entryFileNames: "[name].cjs",
+                    chunkFileNames: "chunks/[name]-[hash].cjs",
+                },
             },
             outDir: "dist/main",
-            externalizeDeps: false,
         },
         plugins: [tsconfigPaths()],
         resolve: {
@@ -104,6 +109,7 @@ export default defineConfig({
         build: {
             target: NODE,
             sourcemap: true,
+            externalizeDeps: false,
             rollupOptions: {
                 input: {
                     index: "emain/preload.ts",
@@ -114,7 +120,6 @@ export default defineConfig({
                 },
             },
             outDir: "dist/preload",
-            externalizeDeps: false,
         },
         server: {
             open: false,

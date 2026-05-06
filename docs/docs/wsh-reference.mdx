@@ -39,7 +39,7 @@ wsh edit [path]
 wsh edit -m [path]           # opens in magnified block
 ```
 
-This will open up a codeedit block for the specified file. This is useful for quickly editing files on a local or remote machine in Wave's graphical editor. This command returns immediately after opening the block. 
+This will open up a codeedit block for the specified file. This is useful for quickly editing files on a local or remote machine in Wave's graphical editor. This command returns immediately after opening the block.
 
 For `$EDITOR` integration (e.g. with `git commit`), see [`wsh editor`](#editor) which blocks until the editor is closed.
 
@@ -161,12 +161,14 @@ wsh ai architecture.png api-spec.pdf server.go -m "review the system design"
 ```
 
 **File Size Limits:**
+
 - Text files: 200KB maximum
 - PDF files: 5MB maximum
 - Image files: 7MB maximum (accounts for base64 encoding overhead)
 - Maximum 15 files per command
 
 **Flags:**
+
 - `-m, --message <text>` - Add message text along with files
 - `-s, --submit` - Auto-submit immediately (default waits for user)
 - `-n, --new` - Clear current chat and start fresh conversation
@@ -987,6 +989,7 @@ wsh blocks list [flags]
 List all blocks with optional filtering by workspace, window, tab, or view type. Output can be formatted as a table (default) or JSON for scripting.
 
 Flags:
+
 - `--workspace <id>` - restrict to specific workspace id
 - `--window <id>` - restrict to specific window id
 - `--tab <id>` - restrict to specific tab id
@@ -1010,6 +1013,189 @@ wsh blocks list --workspace=12d0c067-378e-454c-872e-77a314248114
 wsh blocks list --json
 ```
 
+---
+
+## automation
+
+<VersionBadge version="v0.14.6" />
+
+The `automation` command group exposes a more machine-readable contract for QA, agents, and debugging tools. It is designed around the same ideas as an internal automation API:
+
+- `observe` via structured JSON snapshots
+- `control artifacts` via deterministic screenshot capture
+- `synchronize` via event and wait commands instead of shell sleeps
+
+All live-streaming commands emit JSON lines (`.jsonl`) on stdout.
+
+### ready
+
+```sh
+wsh automation ready
+```
+
+Emits a single `ready` JSON line with Wave version, route, and current Wave execution context.
+
+### state
+
+```sh
+wsh automation state
+wsh automation state --focused
+wsh automation state -b 2
+```
+
+Returns a structured snapshot for the target block, including:
+
+- focused block context when available
+- block metadata
+- runtime options
+- runtime info (`rtInfo`)
+- attached job status
+- connection status
+
+This is intended to be the primary inspect primitive for automation before falling back to screenshots.
+
+### events
+
+```sh
+wsh automation events --event block:jobstatus
+wsh automation events --event waveobj:update --scope block:12345678
+wsh automation events --event connchange --history 10 --follow=false
+```
+
+Streams matching Wave events as JSON lines. Use `--history` to emit persisted history first when available, then continue following live events.
+
+Flags:
+
+- `--event <name>` - event name to subscribe to
+- `--scope <scope>` - restrict to one scope
+- `--all-scopes` - subscribe across all scopes
+- `--history <n>` - emit up to `n` history items before following
+- `--follow` - continue streaming live events (default `true`)
+
+### wait
+
+```sh
+wsh automation wait --event block:jobstatus --scope block:12345678
+wsh automation wait -b 2 --job-done
+wsh automation wait -b 2 --job-state connected
+```
+
+Waits until a condition is satisfied and emits JSON line lifecycle events such as:
+
+- `wait_started`
+- `wait_progress`
+- `wait_satisfied`
+- `wait_timeout`
+
+This is intended to reduce brittle sleep-based automation.
+
+Flags:
+
+- `--timeout <ms>` - overall timeout in milliseconds
+- `--event <name>` - wait for one Wave event
+- `--scope <scope>` - restrict event waits to one scope
+- `--all-scopes` - wait across all scopes
+- `--job-done` - wait for the target block job status to become `done`
+- `--job-state <state>` - wait for a specific job status
+- `--poll-ms <ms>` - polling interval for job-based waits
+
+### screenshot
+
+```sh
+wsh automation screenshot -b 2
+wsh automation screenshot -b 2 -o artifacts/home.png
+```
+
+Captures a block screenshot and emits an `artifact` JSON line. If `--output` is provided, the file path is resolved against the CLI process's initial working directory, which makes artifact paths stable even if Wave changes its internal working directory later.
+
+Without `--output`, the command returns the screenshot as a data URL in JSON.
+
+### action
+
+```sh
+wsh automation action focus -b 2
+wsh automation action type -b 2 "hello world"
+wsh automation action signal -b 2 INT
+wsh automation action resize -b 2 40 120
+```
+
+Provides simple machine-oriented actions for a target block:
+
+- `focus` - focus the block in the current tab
+- `type` - send raw text input to the controller
+- `signal` - send a signal name such as `INT` or `TERM`
+- `resize` - send terminal dimensions to the controller
+
+Each action emits an `action_completed` JSON line on success.
+Actions also emit `action_started` before dispatch, and `action_failed` with an error payload if the controller rejects the request.
+
+### app
+
+```sh
+wsh automation app state
+wsh automation app screenshot -o artifacts/app.png
+wsh automation app dismiss-welcome
+wsh automation app quit --force
+```
+
+Provides app-wide inspection and top-level controls:
+
+- `state` - returns the current window, workspace, and tab plus all known windows/workspaces
+- `screenshot` - captures the current app window as a machine-readable artifact
+- `dismiss-welcome` - persists onboarding acceptance and hides the Welcome UI in the current tab
+- `quit` - exits the running Wave app
+
+### workspace
+
+```sh
+wsh automation workspace list
+wsh automation workspace create smoke-ws --color '#2255aa'
+wsh automation workspace state
+wsh automation workspace switch <workspace-id>
+```
+
+Provides machine-readable workspace automation:
+
+- `list` - lists workspaces with owning window ids
+- `create` - creates a workspace that can immediately be targeted by later CLI calls
+- `state` - returns the target workspace, its tabs, active tab, and owning window
+- `switch` - switches the current or specified window to a workspace
+
+### tab
+
+```sh
+wsh automation tab state
+wsh automation tab create smoke-tab
+wsh automation tab switch <tab-id>
+wsh automation tab close <tab-id>
+```
+
+Provides direct tab lifecycle control:
+
+- `state` - returns the target tab, parent workspace/window, focused block, and tab blocks
+- `create` - creates a tab in the current or specified workspace
+- `switch` - activates a tab in its workspace
+- `close` - closes a tab and reports the new active tab when one exists
+
+### window
+
+```sh
+wsh automation window list
+wsh automation window create
+wsh automation window state
+wsh automation window focus
+wsh automation window screenshot -o artifacts/window.png
+wsh automation window close
+```
+
+Provides direct Electron window control:
+
+- `list` - lists open windows with their current workspace and active tab
+- `create` - creates and shows a new Electron window, optionally for a specific workspace
+- `state` - returns a full snapshot for one window
+- `focus` - focuses the target window
+- `screenshot` - captures a whole-window or active-window UI snapshot
+- `close` - closes the target window and triggers the real UI close path
 
 ---
 
@@ -1120,4 +1306,5 @@ The secrets UI provides a convenient visual way to browse, add, edit, and delete
 :::tip
 Use secrets in your scripts to avoid hardcoding sensitive values. Secrets work across remote machines - store an API key locally with `wsh secret set`, then access it from any SSH or WSL connection with `wsh secret get`. The secret is securely retrieved from your local machine without needing to duplicate it on remote systems.
 :::
+
 </PlatformProvider>

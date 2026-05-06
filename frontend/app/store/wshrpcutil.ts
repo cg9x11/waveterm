@@ -17,14 +17,14 @@ function initWshrpc(routeId: string): WSControl {
         DefaultRouter.recvRpcMessage(event.data);
     };
     initGlobalWS(getWSServerEndpoint(), routeId, handleFn);
-    globalWS.connectNow("connectWshrpc");
-    TabRpcClient = new TabClient(routeId);
-    setWpsRpcClient(TabRpcClient);
-    DefaultRouter.registerRoute(TabRpcClient.routeId, TabRpcClient);
     addWSReconnectHandler(() => {
         DefaultRouter.reannounceRoutes();
     });
     addWSReconnectHandler(wpsReconnectHandler);
+    TabRpcClient = new TabClient(routeId);
+    setWpsRpcClient(TabRpcClient);
+    DefaultRouter.registerRoute(TabRpcClient.routeId, TabRpcClient);
+    globalWS.connectNow("connectWshrpc");
     return globalWS;
 }
 

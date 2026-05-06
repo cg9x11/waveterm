@@ -23,6 +23,12 @@ func ActivityCommand(w *wshutil.WshRpc, data wshrpc.ActivityUpdate, opts *wshrpc
 	return err
 }
 
+// command "agreetos", wshserver.AgreeTosCommand
+func AgreeTosCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "agreetos", nil, opts)
+	return err
+}
+
 // command "aisendmessage", wshserver.AiSendMessageCommand
 func AiSendMessageCommand(w *wshutil.WshRpc, data wshrpc.AiMessageData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "aisendmessage", data, opts)
@@ -95,10 +101,28 @@ func CaptureBlockScreenshotCommand(w *wshutil.WshRpc, data wshrpc.CommandCapture
 	return resp, err
 }
 
+// command "capturewindowscreenshot", wshserver.CaptureWindowScreenshotCommand
+func CaptureWindowScreenshotCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "capturewindowscreenshot", data, opts)
+	return resp, err
+}
+
 // command "checkgoversion", wshserver.CheckGoVersionCommand
 func CheckGoVersionCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*wshrpc.CommandCheckGoVersionRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandCheckGoVersionRtnData](w, "checkgoversion", nil, opts)
 	return resp, err
+}
+
+// command "closetab", wshserver.CloseTabCommand
+func CloseTabCommand(w *wshutil.WshRpc, data wshrpc.CommandCloseTabData, opts *wshrpc.RpcOpts) (*wshrpc.CommandCloseTabRtnData, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandCloseTabRtnData](w, "closetab", data, opts)
+	return resp, err
+}
+
+// command "closewindow", wshserver.CloseWindowCommand
+func CloseWindowCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "closewindow", data, opts)
+	return err
 }
 
 // command "connconnect", wshserver.ConnConnectCommand
@@ -188,6 +212,18 @@ func CreateBlockCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateBlockData, o
 // command "createsubblock", wshserver.CreateSubBlockCommand
 func CreateSubBlockCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateSubBlockData, opts *wshrpc.RpcOpts) (waveobj.ORef, error) {
 	resp, err := sendRpcRequestCallHelper[waveobj.ORef](w, "createsubblock", data, opts)
+	return resp, err
+}
+
+// command "createtab", wshserver.CreateTabCommand
+func CreateTabCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateTabData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "createtab", data, opts)
+	return resp, err
+}
+
+// command "createworkspace", wshserver.CreateWorkspaceCommand
+func CreateWorkspaceCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateWorkspaceData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "createworkspace", data, opts)
 	return resp, err
 }
 
@@ -418,6 +454,12 @@ func GetBuilderStatusCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpt
 	return resp, err
 }
 
+// command "getclient", wshserver.GetClientCommand
+func GetClientCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*waveobj.Client, error) {
+	resp, err := sendRpcRequestCallHelper[*waveobj.Client](w, "getclient", nil, opts)
+	return resp, err
+}
+
 // command "getfocusedblockdata", wshserver.GetFocusedBlockDataCommand
 func GetFocusedBlockDataCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*wshrpc.FocusedBlockData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.FocusedBlockData](w, "getfocusedblockdata", nil, opts)
@@ -505,6 +547,18 @@ func GetWaveAIModeConfigCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (wconfi
 // command "getwaveairatelimit", wshserver.GetWaveAIRateLimitCommand
 func GetWaveAIRateLimitCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*uctypes.RateLimitInfo, error) {
 	resp, err := sendRpcRequestCallHelper[*uctypes.RateLimitInfo](w, "getwaveairatelimit", nil, opts)
+	return resp, err
+}
+
+// command "getwindow", wshserver.GetWindowCommand
+func GetWindowCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*waveobj.Window, error) {
+	resp, err := sendRpcRequestCallHelper[*waveobj.Window](w, "getwindow", data, opts)
+	return resp, err
+}
+
+// command "getworkspace", wshserver.GetWorkspaceCommand
+func GetWorkspaceCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*waveobj.Workspace, error) {
+	resp, err := sendRpcRequestCallHelper[*waveobj.Workspace](w, "getworkspace", data, opts)
 	return resp, err
 }
 
@@ -650,6 +704,12 @@ func NotifyCommand(w *wshutil.WshRpc, data wshrpc.WaveNotificationOptions, opts 
 func NotifySystemResumeCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "notifysystemresume", nil, opts)
 	return err
+}
+
+// command "opennewwindow", wshserver.OpenNewWindowCommand
+func OpenNewWindowCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "opennewwindow", data, opts)
+	return resp, err
 }
 
 // command "path", wshserver.PathCommand
@@ -830,6 +890,12 @@ func SendTelemetryCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) error {
 	return err
 }
 
+// command "setactivetab", wshserver.SetActiveTabCommand
+func SetActiveTabCommand(w *wshutil.WshRpc, data wshrpc.CommandSetActiveTabData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "setactivetab", data, opts)
+	return err
+}
+
 // command "setblockfocus", wshserver.SetBlockFocusCommand
 func SetBlockFocusCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "setblockfocus", data, opts)
@@ -916,6 +982,12 @@ func StreamDataAckCommand(w *wshutil.WshRpc, data wshrpc.CommandStreamAckData, o
 // command "streamtest", wshserver.StreamTestCommand
 func StreamTestCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) chan wshrpc.RespOrErrorUnion[int] {
 	return sendRpcRequestResponseStreamHelper[int](w, "streamtest", nil, opts)
+}
+
+// command "switchworkspace", wshserver.SwitchWorkspaceCommand
+func SwitchWorkspaceCommand(w *wshutil.WshRpc, data wshrpc.CommandSwitchWorkspaceData, opts *wshrpc.RpcOpts) (*waveobj.Workspace, error) {
+	resp, err := sendRpcRequestCallHelper[*waveobj.Workspace](w, "switchworkspace", data, opts)
+	return resp, err
 }
 
 // command "termgetscrollbacklines", wshserver.TermGetScrollbackLinesCommand

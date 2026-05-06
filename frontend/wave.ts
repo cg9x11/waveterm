@@ -69,9 +69,11 @@ async function initBare() {
     getApi().onZoomFactorChange((zoomFactor) => {
         updateZoomFactor(zoomFactor);
     });
+    // Signal readiness as soon as the renderer event hooks are installed so
+    // Electron can deliver wave-init without waiting on slow font loading.
+    getApi().setWindowInitStatus("ready");
     document.fonts.ready.then(() => {
         console.log("Init Bare Done");
-        getApi().setWindowInitStatus("ready");
     });
 }
 

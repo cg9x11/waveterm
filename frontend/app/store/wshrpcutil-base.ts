@@ -117,13 +117,13 @@ function initElectronWshrpc(electronClient: WshClient, eoOpts: ElectronOverrideO
         DefaultRouter.recvRpcMessage(event.data);
     };
     initGlobalWS(getWSServerEndpoint(), "electron", handleFn, eoOpts);
-    globalWS.connectNow("connectWshrpc");
-    setWpsRpcClient(electronClient);
-    DefaultRouter.registerRoute(electronClient.routeId, electronClient);
     addWSReconnectHandler(() => {
         DefaultRouter.reannounceRoutes();
     });
     addWSReconnectHandler(wpsReconnectHandler);
+    setWpsRpcClient(electronClient);
+    DefaultRouter.registerRoute(electronClient.routeId, electronClient);
+    globalWS.connectNow("connectWshrpc");
 }
 
 function shutdownWshrpc() {

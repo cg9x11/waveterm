@@ -37,6 +37,9 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/remote/fileshare/wshfs"
 	"github.com/wavetermdev/waveterm/pkg/secretstore"
+	"github.com/wavetermdev/waveterm/pkg/service/clientservice"
+	"github.com/wavetermdev/waveterm/pkg/service/windowservice"
+	"github.com/wavetermdev/waveterm/pkg/service/workspaceservice"
 	"github.com/wavetermdev/waveterm/pkg/suggestion"
 	"github.com/wavetermdev/waveterm/pkg/telemetry"
 	"github.com/wavetermdev/waveterm/pkg/telemetry/telemetrydata"
@@ -94,6 +97,16 @@ func (ws *WshServer) TestMultiArgCommand(ctx context.Context, arg1 string, arg2 
 // for testing
 func (ws *WshServer) MessageCommand(ctx context.Context, data wshrpc.CommandMessageData) error {
 	log.Printf("MESSAGE: %s\n", data.Message)
+	return nil
+}
+
+func (ws *WshServer) AgreeTosCommand(ctx context.Context) error {
+	ctx = waveobj.ContextWithUpdates(ctx)
+	updates, err := (&clientservice.ClientService{}).AgreeTos(ctx)
+	if err != nil {
+		return err
+	}
+	wps.Broker.SendUpdateEvents(updates)
 	return nil
 }
 
@@ -155,6 +168,26 @@ func (ws *WshServer) GetMetaCommand(ctx context.Context, data wshrpc.CommandGetM
 	return waveobj.GetMeta(obj), nil
 }
 
+func (ws *WshServer) GetWindowCommand(ctx context.Context, windowId string) (*waveobj.Window, error) {
+	return wcore.GetWindow(ctx, windowId)
+}
+
+func (ws *WshServer) GetClientCommand(ctx context.Context) (*waveobj.Client, error) {
+	return wcore.GetClientData(ctx)
+}
+
+func (ws *WshServer) GetWorkspaceCommand(ctx context.Context, workspaceId string) (*waveobj.Workspace, error) {
+	return wcore.GetWorkspace(ctx, workspaceId)
+}
+
+func (ws *WshServer) CloseWindowCommand(ctx context.Context, windowId string) error {
+	return (&windowservice.WindowService{}).CloseWindow(ctx, windowId, false)
+}
+
+func (ws *WshServer) CreateWorkspaceCommand(ctx context.Context, data wshrpc.CommandCreateWorkspaceData) (string, error) {
+	return (&workspaceservice.WorkspaceService{}).CreateWorkspace(ctx, data.Name, data.Icon, data.Color, data.ApplyDefaults)
+}
+
 func (ws *WshServer) UpdateTabNameCommand(ctx context.Context, tabId string, newName string) error {
 	oref := waveobj.ORef{OType: waveobj.OType_Tab, OID: tabId}
 	err := wstore.UpdateTabName(ctx, tabId, newName)
@@ -163,6 +196,34 @@ func (ws *WshServer) UpdateTabNameCommand(ctx context.Context, tabId string, new
 	}
 	wcore.SendWaveObjUpdate(oref)
 	return nil
+}
+
+func (ws *WshServer) CreateTabCommand(ctx context.Context, data wshrpc.CommandCreateTabData) (string, error) {
+	tabId, _, err := (&workspaceservice.WorkspaceService{}).CreateTab(data.WorkspaceId, data.TabName, data.ActivateTab)
+	return tabId, err
+}
+
+func (ws *WshServer) SetActiveTabCommand(ctx context.Context, data wshrpc.CommandSetActiveTabData) error {
+	_, err := (&workspaceservice.WorkspaceService{}).SetActiveTab(data.WorkspaceId, data.TabId)
+	return err
+}
+
+func (ws *WshServer) CloseTabCommand(ctx context.Context, data wshrpc.CommandCloseTabData) (*wshrpc.CommandCloseTabRtnData, error) {
+	rtn, _, err := (&workspaceservice.WorkspaceService{}).CloseTab(ctx, data.WorkspaceId, data.TabId, data.FromElectron)
+	if err != nil {
+		return nil, err
+	}
+	if rtn == nil {
+		return nil, nil
+	}
+	return &wshrpc.CommandCloseTabRtnData{
+		CloseWindow:    rtn.CloseWindow,
+		NewActiveTabId: rtn.NewActiveTabId,
+	}, nil
+}
+
+func (ws *WshServer) SwitchWorkspaceCommand(ctx context.Context, data wshrpc.CommandSwitchWorkspaceData) (*waveobj.Workspace, error) {
+	return (&windowservice.WindowService{}).SwitchWorkspace(ctx, data.WindowId, data.WorkspaceId)
 }
 
 func (ws *WshServer) UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error {
@@ -945,18 +1006,28 @@ func (ws *WshServer) BlocksListCommand(
 }
 
 func (ws *WshServer) WorkspaceListCommand(ctx context.Context) ([]wshrpc.WorkspaceInfoData, error) {
-	workspaceList, err := wcore.ListWorkspaces(ctx)
+	workspaces, err := wstore.DBGetAllObjsByType[*waveobj.Workspace](ctx, waveobj.OType_Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("error listing workspaces: %w", err)
 	}
+	windows, err := wstore.DBGetAllObjsByType[*waveobj.Window](ctx, waveobj.OType_Window)
+	if err != nil {
+		return nil, fmt.Errorf("error listing windows: %w", err)
+	}
+	workspaceToWindow := make(map[string]string, len(windows))
+	for _, window := range windows {
+		if window == nil || window.WorkspaceId == "" {
+			continue
+		}
+		workspaceToWindow[window.WorkspaceId] = window.OID
+	}
 	var rtn []wshrpc.WorkspaceInfoData
-	for _, workspaceEntry := range workspaceList {
-		workspaceData, err := wcore.GetWorkspace(ctx, workspaceEntry.WorkspaceId)
-		if err != nil {
-			return nil, fmt.Errorf("error getting workspace: %w", err)
+	for _, workspaceData := range workspaces {
+		if workspaceData == nil {
+			continue
 		}
 		rtn = append(rtn, wshrpc.WorkspaceInfoData{
-			WindowId:      workspaceEntry.WindowId,
+			WindowId:      workspaceToWindow[workspaceData.OID],
 			WorkspaceData: workspaceData,
 		})
 	}

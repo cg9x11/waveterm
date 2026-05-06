@@ -278,6 +278,19 @@ declare global {
         errorstring?: string;
     };
 
+    // wshrpc.CommandCloseTabData
+    type CommandCloseTabData = {
+        workspaceid: string;
+        tabid: string;
+        fromelectron?: boolean;
+    };
+
+    // wshrpc.CommandCloseTabRtnData
+    type CommandCloseTabRtnData = {
+        closewindow?: boolean;
+        newactivetabid?: string;
+    };
+
     // wshrpc.CommandConnServerInitData
     type CommandConnServerInitData = {
         clientid: string;
@@ -313,6 +326,21 @@ declare global {
     type CommandCreateSubBlockData = {
         parentblockid: string;
         blockdef: BlockDef;
+    };
+
+    // wshrpc.CommandCreateTabData
+    type CommandCreateTabData = {
+        workspaceid: string;
+        tabname?: string;
+        activatetab?: boolean;
+    };
+
+    // wshrpc.CommandCreateWorkspaceData
+    type CommandCreateWorkspaceData = {
+        name?: string;
+        icon?: string;
+        color?: string;
+        applydefaults?: boolean;
     };
 
     // wshrpc.CommandDebugTermData
@@ -635,6 +663,12 @@ declare global {
         builderid: string;
     };
 
+    // wshrpc.CommandSetActiveTabData
+    type CommandSetActiveTabData = {
+        workspaceid: string;
+        tabid: string;
+    };
+
     // wshrpc.CommandSetMetaData
     type CommandSetMetaData = {
         oref: ORef;
@@ -688,6 +722,12 @@ declare global {
         data64?: string;
         eof?: boolean;
         error?: string;
+    };
+
+    // wshrpc.CommandSwitchWorkspaceData
+    type CommandSwitchWorkspaceData = {
+        windowid: string;
+        workspaceid: string;
     };
 
     // wshrpc.CommandTermGetScrollbackLinesData
@@ -1589,6 +1629,7 @@ declare global {
         "debug:panictype"?: string;
         "block:view"?: string;
         "block:controller"?: string;
+        "block:subblock"?: boolean;
         "ai:backendtype"?: string;
         "ai:local"?: boolean;
         "wsh:cmd"?: string;

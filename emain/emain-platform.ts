@@ -3,7 +3,7 @@
 
 import { fireAndForget } from "@/util/util";
 import { app, dialog, ipcMain, shell } from "electron";
-import envPaths from "env-paths";
+import envPathsModule from "env-paths";
 import { existsSync, mkdirSync } from "fs";
 import os from "os";
 import path from "path";
@@ -30,6 +30,7 @@ const waveDirNamePrefix = "waveterm";
 const waveDirNameSuffix = isDev ? "dev" : "";
 const waveDirName = `${waveDirNamePrefix}${waveDirNameSuffix ? `-${waveDirNameSuffix}` : ""}`;
 
+const envPaths = typeof envPathsModule === "function" ? envPathsModule : envPathsModule.default;
 const paths = envPaths("waveterm", { suffix: waveDirNameSuffix });
 
 app.setName(isDev ? "Wave (Dev)" : "Wave");

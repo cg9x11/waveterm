@@ -40,6 +40,9 @@ const config = {
     directories: {
         output: "make",
     },
+    toolsets: {
+        winCodeSign: "1.1.0",
+    },
     asarUnpack: [
         "dist/bin/**/*", // wavesrv and wsh binaries
         "dist/schema/**/*", // schema files for Monaco editor
