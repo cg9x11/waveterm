@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { BlockNodeModel } from "@/app/block/blocktypes";
-import { replaceBlock } from "@/app/store/global";
+import { getBlockComponentModel, replaceBlock } from "@/app/store/global";
 import { makeORef } from "@/app/store/wos";
 import { makeFeBlockRouteId } from "@/app/store/wshrouter";
 import type { TabModel } from "@/app/store/tab-model";
+import type { TermViewModel } from "@/app/view/term/term-model";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { WaveEnv, WaveEnvSubset, useWaveEnv } from "@/app/waveenv/waveenv";
 import { isBlank, isLocalConnName } from "@/util/util";
@@ -17,6 +18,7 @@ const MaxScanDepth = 3;
 const MaxScanDirs = 300;
 const MaxListEntries = 250;
 const MaxPromptProbeLines = 48;
+const ActiveTermCwdPollMs = 1500;
 
 type RootCandidate = {
     path: string;
@@ -42,6 +44,17 @@ type DiscoveryResult = {
     fallbackRoot: string;
 };
 
+type RootResolveBlock = {
+    blockid: string;
+    tabid: string;
+    meta: MetaType;
+};
+
+type WorkspaceDiscoveryWatchState = {
+    discoveryKey: string;
+    activeLocalTermBlocks: RootResolveBlock[];
+};
+
 type GitLauncherEnv = WaveEnvSubset<{
     platform: WaveEnv["platform"];
     atoms: {
@@ -56,6 +69,9 @@ type GitLauncherEnv = WaveEnvSubset<{
         FindLazygitCommand: WaveEnv["rpc"]["FindLazygitCommand"];
         GetRTInfoCommand: WaveEnv["rpc"]["GetRTInfoCommand"];
         TermGetScrollbackLinesCommand: WaveEnv["rpc"]["TermGetScrollbackLinesCommand"];
+    };
+    wos: {
+        getWaveObjectAtom: WaveEnv["wos"]["getWaveObjectAtom"];
     };
 }>;
 
@@ -110,15 +126,19 @@ function getPathBaseName(path: string): string {
     return segments[segments.length - 1];
 }
 
-function shouldSkipScanDir(name: string): boolean {
+function isWindowsDriveRoot(path: string): boolean {
+    return /^[a-zA-Z]:[\\/]?$/.test(stripTrailingSeparators(path));
+}
+
+function shouldSkipScanDir(name: string, platform: NodeJS.Platform, parentPath = ""): boolean {
     if (isBlank(name)) {
         return true;
     }
     const lowerName = name.toLowerCase();
-    if (lowerName.startsWith(".")) {
+    if (lowerName.startsWith(".") || lowerName.startsWith("$")) {
         return true;
     }
-    return (
+    if (
         lowerName === "node_modules" ||
         lowerName === "dist" ||
         lowerName === "build" ||
@@ -129,6 +149,56 @@ function shouldSkipScanDir(name: string): boolean {
         lowerName === ".next" ||
         lowerName === ".turbo" ||
         lowerName === ".cache"
+    ) {
+        return true;
+    }
+
+    if (platform !== "win32") {
+        return false;
+    }
+
+    const normalizedParent = normalizePathKey(parentPath, platform);
+    if (
+        isWindowsDriveRoot(parentPath) &&
+        (lowerName === "recovery" ||
+            lowerName === "system volume information" ||
+            lowerName === "windows" ||
+            lowerName === "program files" ||
+            lowerName === "program files (x86)" ||
+            lowerName === "programdata" ||
+            lowerName === "perflogs" ||
+            lowerName === "msocache")
+    ) {
+        return true;
+    }
+
+    if (
+        normalizedParent.endsWith("/users") &&
+        (lowerName === "all users" ||
+            lowerName === "default" ||
+            lowerName === "default user" ||
+            lowerName === "public" ||
+            lowerName === "codexsandboxoffline")
+    ) {
+        return true;
+    }
+
+    if (
+        normalizedParent.includes("/appdata/") &&
+        (lowerName === "packages" || lowerName === "temp" || lowerName === "tempstate")
+    ) {
+        return true;
+    }
+
+    return false;
+}
+
+function isPermissionDeniedScanError(error: unknown): boolean {
+    const errorText = String(error).toLowerCase();
+    return (
+        errorText.includes("access is denied") ||
+        errorText.includes("permission denied") ||
+        errorText.includes("operation not permitted")
     );
 }
 
@@ -143,6 +213,24 @@ function dedupeStrings(values: string[]): string[] {
         result.push(value);
     }
     return result;
+}
+
+function toSentenceCase(value: string): string {
+    if (isBlank(value)) {
+        return "";
+    }
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function parseCssPixels(value: unknown): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value !== "string") {
+        return 0;
+    }
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function sanitizePromptLine(line: string): string {
@@ -299,6 +387,22 @@ async function getPromptCurrentDirectory(
     platform: NodeJS.Platform
 ): Promise<string> {
     try {
+        const blockComponentModel = getBlockComponentModel(blockId);
+        const termViewModel = blockComponentModel?.viewModel as TermViewModel | undefined;
+        const scrollbackContent = termViewModel?.termRef?.current?.getScrollbackContent() ?? "";
+        const directLines = scrollbackContent.split(/\r?\n/).slice(-MaxPromptProbeLines);
+        const directPromptCandidates = extractPromptPathCandidates(directLines, platform);
+        for (const promptCandidate of directPromptCandidates) {
+            const resolvedDir = await resolveDirectoryCandidate(rpc, promptCandidate);
+            if (!isBlank(resolvedDir)) {
+                return resolvedDir;
+            }
+        }
+    } catch {
+        // Ignore direct prompt probing failures and continue with RPC fallback.
+    }
+
+    try {
         const scrollback = await rpc.TermGetScrollbackLinesCommand(
             TabRpcClient,
             {
@@ -323,17 +427,11 @@ async function getPromptCurrentDirectory(
 
 async function resolveWorkspaceRootPath(
     rpc: GitLauncherEnv["rpc"],
-    block: BlocksListEntry,
+    block: RootResolveBlock,
     platform: NodeJS.Platform
 ): Promise<string> {
     if (!isLocalConnName(block.meta?.connection)) {
         return "";
-    }
-
-    const explicitCwd = typeof block.meta?.["cmd:cwd"] === "string" ? block.meta["cmd:cwd"] : "";
-    const explicitDir = await resolveDirectoryCandidate(rpc, explicitCwd);
-    if (!isBlank(explicitDir)) {
-        return explicitDir;
     }
 
     if (block.meta?.view === "preview") {
@@ -348,13 +446,19 @@ async function resolveWorkspaceRootPath(
         return "";
     }
 
+    const promptDir = await getPromptCurrentDirectory(rpc, block.blockid, platform);
     const runtimeCwd = await getRuntimeCurrentDirectory(rpc, block.blockid);
     const runtimeDir = await resolveDirectoryCandidate(rpc, runtimeCwd);
+    const explicitCwd = typeof block.meta?.["cmd:cwd"] === "string" ? block.meta["cmd:cwd"] : "";
+    const explicitDir = await resolveDirectoryCandidate(rpc, explicitCwd);
+
+    if (!isBlank(promptDir)) {
+        return promptDir;
+    }
     if (!isBlank(runtimeDir)) {
         return runtimeDir;
     }
-
-    return getPromptCurrentDirectory(rpc, block.blockid, platform);
+    return explicitDir;
 }
 
 function getRootLabel(block: BlocksListEntry, activeTabId: string): string {
@@ -501,12 +605,15 @@ async function scanRepoRootsBelow(
                     continue;
                 }
                 const childName = entry.name ?? getPathBaseName(entry.path);
-                if (shouldSkipScanDir(childName)) {
+                if (shouldSkipScanDir(childName, platform, currentPath)) {
                     continue;
                 }
                 queue.push({ path: stripTrailingSeparators(entry.path), depth: current.depth + 1 });
             }
         } catch (error) {
+            if (platform === "win32" && !pathsEqual(currentPath, root.path, platform) && isPermissionDeniedScanError(error)) {
+                continue;
+            }
             errors.push(`Could not read ${currentPath}: ${String(error)}`);
         }
     }
@@ -685,6 +792,89 @@ function statusBadge(label: string, active = false) {
     );
 }
 
+function getRepoContextLabel(repo: RepoEntry): string {
+    const preferredSource =
+        repo.sources.find((source) => source.includes("terminal")) ??
+        repo.sources.find((source) => source.includes("file")) ??
+        repo.sources[0] ??
+        "";
+    if (repo.activeTab) {
+        return preferredSource.includes("file") ? "Active file" : "Active terminal";
+    }
+    return toSentenceCase(preferredSource);
+}
+
+function getRootDisplayName(root: RootCandidate): string {
+    const baseName = getPathBaseName(root.path);
+    if (!isBlank(baseName)) {
+        return baseName;
+    }
+    return root.path;
+}
+
+function getWorkspaceRootsSummary(roots: RootCandidate[]): string {
+    if (roots.length === 0) {
+        return "Enter any local folder to scan manually.";
+    }
+    const activeRoot = roots.find((root) => root.activeTab);
+    if (activeRoot != null) {
+        return `${roots.length} workspace folders detected. Active: ${getRootDisplayName(activeRoot)}.`;
+    }
+    return `${roots.length} workspace folders detected from open terminals and file previews.`;
+}
+
+function createWorkspaceDiscoveryWatchAtom(
+    getWaveObjectAtom: GitLauncherEnv["wos"]["getWaveObjectAtom"],
+    workspaceId: string
+) {
+    return atom<WorkspaceDiscoveryWatchState>((get) => {
+        if (isBlank(workspaceId)) {
+            return {
+                discoveryKey: "",
+                activeLocalTermBlocks: [],
+            };
+        }
+
+        const workspace = get(getWaveObjectAtom<Workspace>(makeORef("workspace", workspaceId)));
+        const activeTabId = workspace?.activetabid ?? "";
+        const keyParts = [`workspace:${workspaceId}:${workspace?.version ?? 0}:${activeTabId}`];
+        const activeLocalTermBlocks: RootResolveBlock[] = [];
+
+        for (const tabId of workspace?.tabids ?? []) {
+            const tab = get(getWaveObjectAtom<Tab>(makeORef("tab", tabId)));
+            const blockIds = tab?.blockids ?? [];
+            keyParts.push(`tab:${tabId}:${tab?.version ?? 0}:${blockIds.join(",")}`);
+
+            for (const blockId of blockIds) {
+                const block = get(getWaveObjectAtom<Block>(makeORef("block", blockId)));
+                const meta = block?.meta ?? {};
+                const view = typeof meta.view === "string" ? meta.view : "";
+                const controller = typeof meta.controller === "string" ? meta.controller : "";
+                const connection = typeof meta.connection === "string" ? meta.connection : "";
+                const cmdCwd = typeof meta["cmd:cwd"] === "string" ? meta["cmd:cwd"] : "";
+                const previewFile = typeof meta.file === "string" ? meta.file : "";
+
+                keyParts.push(
+                    `block:${blockId}:${block?.version ?? 0}:${tabId}:${view}:${controller}:${connection}:${cmdCwd}:${previewFile}`
+                );
+
+                if (tabId === activeTabId && view === "term" && isLocalConnName(connection)) {
+                    activeLocalTermBlocks.push({
+                        blockid: blockId,
+                        tabid: tabId,
+                        meta,
+                    });
+                }
+            }
+        }
+
+        return {
+            discoveryKey: keyParts.join("|"),
+            activeLocalTermBlocks,
+        };
+    });
+}
+
 export class GitLauncherViewModel implements ViewModel {
     blockId: string;
     nodeModel: BlockNodeModel;
@@ -708,7 +898,17 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
     const env = useWaveEnv<GitLauncherEnv>();
     const workspaceId = useAtomValue(env.atoms.workspaceId);
     const workspace = useAtomValue(env.atoms.workspace);
+    const nodeInnerRect = useAtomValue(model.nodeModel.innerRect);
     const activeTabId = workspace?.activetabid ?? "";
+    const workspaceWatchAtom = React.useMemo(
+        () => createWorkspaceDiscoveryWatchAtom(env.wos.getWaveObjectAtom, workspaceId),
+        [env.wos, workspaceId]
+    );
+    const workspaceWatch = useAtomValue(workspaceWatchAtom);
+    const blockWidthPx = parseCssPixels(nodeInnerRect?.width);
+    const blockHeightPx = parseCssPixels(nodeInnerRect?.height);
+    const useSingleColumnRepoGrid = blockWidthPx > 0 && blockWidthPx < 920;
+    const useCompactControls = useSingleColumnRepoGrid || (blockHeightPx > 0 && blockHeightPx < 420);
 
     const [autoDiscovery, setAutoDiscovery] = React.useState<DiscoveryResult>(emptyDiscovery());
     const [manualDiscovery, setManualDiscovery] = React.useState<DiscoveryResult>(emptyDiscovery());
@@ -718,8 +918,59 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
     const [refreshEpoch, setRefreshEpoch] = React.useState(0);
     const [manualScanBusy, setManualScanBusy] = React.useState(false);
     const [launchingRepo, setLaunchingRepo] = React.useState("");
+    const [workspaceRootsExpanded, setWorkspaceRootsExpanded] = React.useState<boolean | null>(null);
     const [statusMessage, setStatusMessage] = React.useState("");
     const lastFallbackRootRef = React.useRef("");
+    const [activeTermRootKey, setActiveTermRootKey] = React.useState("");
+    const activeLocalTermBlocksKey = React.useMemo(
+        () =>
+            workspaceWatch.activeLocalTermBlocks
+                .map((block) => `${block.blockid}:${block.meta?.["cmd:cwd"] ?? ""}`)
+                .join("|"),
+        [workspaceWatch.activeLocalTermBlocks]
+    );
+
+    React.useEffect(() => {
+        let disposed = false;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+        async function probeActiveTermRoots() {
+            try {
+                const nextRootKey = (
+                    await Promise.all(
+                        workspaceWatch.activeLocalTermBlocks.map(async (block) => {
+                            const rootPath = await resolveWorkspaceRootPath(env.rpc, block, env.platform);
+                            return `${block.blockid}:${rootPath}`;
+                        })
+                    )
+                ).join("|");
+                if (!disposed) {
+                    setActiveTermRootKey((currentValue) => (currentValue === nextRootKey ? currentValue : nextRootKey));
+                }
+            } finally {
+                if (!disposed && workspaceWatch.activeLocalTermBlocks.length > 0) {
+                    timeoutId = setTimeout(() => {
+                        void probeActiveTermRoots();
+                    }, ActiveTermCwdPollMs);
+                }
+            }
+        }
+
+        if (workspaceWatch.activeLocalTermBlocks.length === 0) {
+            setActiveTermRootKey("");
+            return () => {
+                disposed = true;
+            };
+        }
+
+        void probeActiveTermRoots();
+        return () => {
+            disposed = true;
+            if (timeoutId != null) {
+                clearTimeout(timeoutId);
+            }
+        };
+    }, [activeLocalTermBlocksKey, env.platform, env.rpc, workspaceWatch.activeLocalTermBlocks]);
 
     React.useEffect(() => {
         let disposed = false;
@@ -754,7 +1005,15 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
         return () => {
             disposed = true;
         };
-    }, [activeTabId, env.platform, env.rpc, refreshEpoch, workspaceId]);
+    }, [
+        activeTabId,
+        activeTermRootKey,
+        env.platform,
+        env.rpc,
+        refreshEpoch,
+        workspaceId,
+        workspaceWatch.discoveryKey,
+    ]);
 
     React.useEffect(() => {
         const nextFallbackRoot = autoDiscovery.fallbackRoot;
@@ -780,6 +1039,12 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
         () => dedupeStrings([...autoDiscovery.errors, ...manualDiscovery.errors, statusMessage].filter(Boolean)),
         [autoDiscovery.errors, manualDiscovery.errors, statusMessage]
     );
+    const workspaceRootsSummary = React.useMemo(
+        () => getWorkspaceRootsSummary(autoDiscovery.roots),
+        [autoDiscovery.roots]
+    );
+    const shouldShowWorkspaceRoots =
+        autoDiscovery.roots.length > 0 && (workspaceRootsExpanded ?? !useCompactControls);
 
     async function handleManualScan() {
         if (isBlank(manualRoot)) {
@@ -866,12 +1131,22 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                             <div className="text-xs font-semibold uppercase tracking-[0.18em] text-secondary">
                                 Scan Root
                             </div>
-                            <div className="text-xs text-secondary">
-                                Scan additional repositories inside folders currently used by open terminals or file
-                                previews in this workspace.
+                            <div className="min-w-0 flex-1 text-xs text-secondary">
+                                {useCompactControls
+                                    ? workspaceRootsSummary
+                                    : "Scan additional repositories inside folders currently used by open terminals or file previews in this workspace."}
                             </div>
+                            {autoDiscovery.roots.length > 0 ? (
+                                <button
+                                    type="button"
+                                    className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-secondary transition-colors hover:bg-white/10 hover:text-white"
+                                    onClick={() => setWorkspaceRootsExpanded((value) => !(value ?? !useCompactControls))}
+                                >
+                                    {shouldShowWorkspaceRoots ? "Hide folders" : "Show folders"}
+                                </button>
+                            ) : null}
                         </div>
-                        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                        <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
                             <input
                                 type="text"
                                 value={manualRoot}
@@ -894,20 +1169,31 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                                 {manualScanBusy ? "Scanning..." : "Scan"}
                             </button>
                         </div>
-                        {autoDiscovery.roots.length > 0 ? (
-                            <div className="mt-3 flex flex-wrap gap-2">
+                        {shouldShowWorkspaceRoots ? (
+                            <div className="mt-2.5 flex flex-wrap gap-2">
                                 {autoDiscovery.roots.map((root) => (
                                     <div
                                         key={root.path}
                                         className={clsx(
-                                            "rounded-full border px-2.5 py-1 text-[11px] font-mono",
+                                            "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]",
                                             root.activeTab
                                                 ? "border-white/20 bg-white/10 text-white"
                                                 : "border-white/10 bg-black/20 text-secondary"
                                         )}
-                                        title={root.path}
+                                        title={`${root.path}\n${toSentenceCase(root.label)}`}
                                     >
-                                        {root.path}
+                                        <span
+                                            className={clsx(
+                                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                                root.activeTab ? "bg-white/80" : "bg-white/35"
+                                            )}
+                                        />
+                                        <span className="truncate font-medium">{getRootDisplayName(root)}</span>
+                                        {root.activeTab ? (
+                                            <span className="text-[10px] uppercase tracking-[0.12em] text-white/80">
+                                                Active
+                                            </span>
+                                        ) : null}
                                     </div>
                                 ))}
                             </div>
@@ -949,9 +1235,10 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                     ) : null}
 
                     {mergedRepos.length > 0 ? (
-                        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                        <div className={clsx("grid gap-3", useSingleColumnRepoGrid ? "grid-cols-1" : "grid-cols-2")}>
                             {mergedRepos.map((repo) => {
                                 const isLaunching = launchingRepo !== "" && pathsEqual(launchingRepo, repo.root, env.platform);
+                                const contextLabel = getRepoContextLabel(repo);
                                 return (
                                     <button
                                         key={repo.root}
@@ -959,33 +1246,57 @@ export const GitLauncherView: React.FC<ViewComponentProps<GitLauncherViewModel>>
                                         disabled={!lazygitInfo?.found || isLaunching}
                                         onClick={() => handleLaunchRepo(repo)}
                                         className={clsx(
-                                            "group rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3 text-left transition-colors",
-                                            "hover:border-white/20 hover:bg-white/[0.06]",
+                                            "group rounded-xl border bg-white/[0.03] px-3 py-2.5 text-left transition-all",
+                                            repo.activeTab
+                                                ? "border-white/18 bg-white/[0.05]"
+                                                : "border-white/10",
+                                            "hover:border-white/22 hover:bg-white/[0.065]",
                                             "disabled:cursor-not-allowed disabled:opacity-60"
                                         )}
                                     >
-                                        <div className="flex items-start gap-3">
-                                            <div className="pt-0.5 text-lg text-white/90">
+                                        <div className="flex items-center gap-3">
+                                            <div
+                                                className={clsx(
+                                                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border text-[15px]",
+                                                    repo.activeTab
+                                                        ? "border-white/20 bg-white/10 text-white"
+                                                        : "border-white/10 bg-black/20 text-white/85"
+                                                )}
+                                            >
                                                 <i className="fa fa-solid fa-code-branch" />
                                             </div>
                                             <div className="min-w-0 flex-1">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <div className="truncate text-sm font-semibold text-primary">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="truncate text-[15px] font-semibold text-primary">
                                                         {repo.name}
                                                     </div>
                                                     {repo.activeTab ? statusBadge("active", true) : null}
-                                                    {repo.sources.slice(0, 2).map((source) => (
-                                                        <React.Fragment key={`${repo.root}-${source}`}>
-                                                            {statusBadge(source)}
-                                                        </React.Fragment>
-                                                    ))}
                                                 </div>
-                                                <div className="mt-1 truncate font-mono text-[11px] text-secondary">
+                                                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-secondary">
+                                                    <span
+                                                        className={clsx(
+                                                            "h-1.5 w-1.5 shrink-0 rounded-full",
+                                                            repo.activeTab ? "bg-white/80" : "bg-white/35"
+                                                        )}
+                                                    />
+                                                    <span className="truncate">{contextLabel}</span>
+                                                </div>
+                                                <div
+                                                    className="mt-1 truncate font-mono text-[10.5px] text-secondary/90"
+                                                    title={repo.root}
+                                                >
                                                     {repo.root}
                                                 </div>
                                             </div>
-                                            <div className="shrink-0 pt-0.5 text-xs text-secondary transition-colors group-hover:text-white">
-                                                {isLaunching ? "Opening..." : "Open"}
+                                            <div
+                                                className={clsx(
+                                                    "shrink-0 rounded-full border px-3 py-1 text-[11px] font-medium transition-colors",
+                                                    isLaunching
+                                                        ? "border-white/18 bg-white/12 text-white"
+                                                        : "border-white/12 bg-black/20 text-secondary group-hover:border-white/22 group-hover:bg-white/10 group-hover:text-white"
+                                                )}
+                                            >
+                                                {isLaunching ? "Opening" : "Open"}
                                             </div>
                                         </div>
                                     </button>
