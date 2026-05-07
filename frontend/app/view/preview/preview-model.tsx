@@ -20,16 +20,15 @@ import type * as MonacoTypes from "monaco-editor";
 import { createRef } from "react";
 import { PreviewView } from "./preview";
 import { makeDirectoryDefaultMenuItems } from "./preview-directory-utils";
+import {
+    formatDirectoryLocationLabel,
+    getDirectoryBookmarks,
+    isNavigationRootPath,
+    isWindowsDriveRoot,
+    isWindowsDrivesVirtualPath,
+    WINDOWS_DRIVES_VIRTUAL_PATH,
+} from "./preview-path-utils";
 import type { PreviewEnv } from "./previewenv";
-
-// TODO drive this using config
-const BOOKMARKS: { label: string; path: string }[] = [
-    { label: "Home", path: "~" },
-    { label: "Desktop", path: "~/Desktop" },
-    { label: "Downloads", path: "~/Downloads" },
-    { label: "Documents", path: "~/Documents" },
-    { label: "Root", path: "/" },
-];
 
 const MaxFileSize = 1024 * 1024 * 10; // 10MB
 const MaxCSVSize = 1024 * 1024 * 1; // 1MB
@@ -208,7 +207,13 @@ export class PreviewModel implements ViewModel {
                     elemtype: "iconbutton",
                     icon: "folder-open",
                     longClick: (e: React.MouseEvent<any>) => {
-                        const menuItems: ContextMenuItem[] = BOOKMARKS.map((bookmark) => ({
+                        const metaPath = get(this.metaFilePath);
+                        const conn = get(this.connectionImmediate);
+                        const menuItems: ContextMenuItem[] = getDirectoryBookmarks(
+                            this.env.platform,
+                            conn,
+                            metaPath
+                        ).map((bookmark) => ({
                             label: `Go to ${bookmark.label} (${bookmark.path})`,
                             click: () => this.goHistory(bookmark.path),
                         }));
@@ -245,7 +250,14 @@ export class PreviewModel implements ViewModel {
                     headerPath = `~ (${loadableFileInfo.data?.dir + "/" + loadableFileInfo.data?.name})`;
                 }
             }
-            if (!isBlank(headerPath) && headerPath != "/" && headerPath.endsWith("/")) {
+            headerPath = formatDirectoryLocationLabel(headerPath);
+            if (
+                !isBlank(headerPath) &&
+                headerPath != "/" &&
+                !isWindowsDriveRoot(headerPath) &&
+                !isWindowsDrivesVirtualPath(headerPath) &&
+                /[\\/]$/.test(headerPath)
+            ) {
                 headerPath = headerPath.slice(0, -1);
             }
             const viewTextChildren: HeaderElem[] = [
@@ -315,7 +327,8 @@ export class PreviewModel implements ViewModel {
             }
             const mimeType = jotaiLoadableValue(get(this.fileMimeTypeLoadable), "");
             const metaPath = get(this.metaFilePath);
-            if (mimeType == "directory" && metaPath == "/") {
+            const conn = get(this.connectionImmediate);
+            if (mimeType == "directory" && isNavigationRootPath(this.env.platform, conn, metaPath)) {
                 return null;
             }
             return {
@@ -403,10 +416,22 @@ export class PreviewModel implements ViewModel {
         });
         this.statFile = atom<Promise<FileInfo>>(async (get) => {
             const fileName = get(this.metaFilePath);
-            const path = await this.formatRemoteUri(fileName, get);
             if (fileName == null) {
                 return null;
             }
+            if (isWindowsDrivesVirtualPath(fileName)) {
+                return {
+                    path: WINDOWS_DRIVES_VIRTUAL_PATH,
+                    dir: WINDOWS_DRIVES_VIRTUAL_PATH,
+                    name: "This PC",
+                    isdir: true,
+                    size: -1,
+                    mimetype: "directory",
+                    readonly: true,
+                    supportsmkdir: false,
+                };
+            }
+            const path = await this.formatRemoteUri(fileName, get);
             try {
                 const statFile = await this.env.rpc.FileInfoCommand(TabRpcClient, {
                     info: {
@@ -607,7 +632,14 @@ export class PreviewModel implements ViewModel {
         }
         try {
             this.updateOpenFileModalAndError(false);
-            await this.goHistory(fileInfo.dir);
+            let parentPath = fileInfo.dir;
+            if (isWindowsDriveRoot(fileInfo.path)) {
+                parentPath = WINDOWS_DRIVES_VIRTUAL_PATH;
+            }
+            if (isBlank(parentPath) || parentPath === fileInfo.path) {
+                return true;
+            }
+            await this.goHistory(parentPath);
             refocusNode(this.blockId);
         } catch (e) {
             globalStore.set(this.openFileError, e.message);
@@ -710,7 +742,7 @@ export class PreviewModel implements ViewModel {
             click: () =>
                 fireAndForget(async () => {
                     const filePath = await globalStore.get(this.statFilePath);
-                    if (filePath == null) {
+                    if (filePath == null || isWindowsDrivesVirtualPath(filePath)) {
                         return;
                     }
                     const conn = await globalStore.get(this.connection);
@@ -736,7 +768,9 @@ export class PreviewModel implements ViewModel {
         });
         menuItems.push({ type: "separator" });
         const finfo = jotaiLoadableValue(globalStore.get(this.loadableFileInfo), null);
-        addOpenMenuItems(menuItems, globalStore.get(this.connectionImmediate), finfo);
+        if (!isWindowsDrivesVirtualPath(finfo?.path)) {
+            addOpenMenuItems(menuItems, globalStore.get(this.connectionImmediate), finfo);
+        }
         const loadableSV = globalStore.get(this.loadableSpecializedView);
         const wordWrapAtom = getOverrideConfigAtom(this.blockId, "editor:wordwrap");
         const wordWrap = globalStore.get(wordWrapAtom) ?? false;

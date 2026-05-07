@@ -43,10 +43,124 @@ import {
     mergeError,
     overwriteError,
 } from "./preview-directory-utils";
+import {
+    type DirectoryBookmark,
+    getDirectoryBookmarks,
+    getWindowsDriveLabel,
+    isSamePath,
+    isWindowsDriveRoot,
+    isWindowsDrivesVirtualPath,
+    isWindowsFilesystemContext,
+    SYNTHETIC_WINDOWS_DRIVE_META_KEY,
+    WINDOWS_DRIVES_VIRTUAL_PATH,
+} from "./preview-path-utils";
 import { type PreviewModel } from "./preview-model";
 import type { PreviewEnv } from "./previewenv";
 
 const PageJumpSize = 20;
+const WindowsDriveLetters = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
+
+function isSyntheticDriveEntry(fileInfo: FileInfo): boolean {
+    return fileInfo?.meta?.[SYNTHETIC_WINDOWS_DRIVE_META_KEY] === true;
+}
+
+async function discoverWindowsDrives(model: PreviewModel, env: PreviewEnv): Promise<FileInfo[]> {
+    const driveInfo = await Promise.all(
+        WindowsDriveLetters.map(async (letter) => {
+            const drivePath = `${letter}:/`;
+            try {
+                const info = await env.rpc.FileInfoCommand(TabRpcClient, {
+                    info: {
+                        path: await model.formatRemoteUri(drivePath, globalStore.get),
+                    },
+                });
+                if (info == null || info.notfound || info.staterror || !info.isdir) {
+                    return null;
+                }
+                return {
+                    ...info,
+                    dir: WINDOWS_DRIVES_VIRTUAL_PATH,
+                    name: getWindowsDriveLabel(info.path || drivePath),
+                    meta: {
+                        ...(info.meta ?? {}),
+                        [SYNTHETIC_WINDOWS_DRIVE_META_KEY]: true,
+                    },
+                    mimetype: "directory",
+                    modestr: "-",
+                    size: -1,
+                } as FileInfo;
+            } catch {
+                return null;
+            }
+        })
+    );
+    return driveInfo
+        .filter((info): info is FileInfo => info != null)
+        .sort((left, right) => getWindowsDriveLabel(left.path).localeCompare(getWindowsDriveLabel(right.path)));
+}
+
+interface DirectoryQuickAccessBarProps {
+    model: PreviewModel;
+    bookmarks: DirectoryBookmark[];
+    currentPath: string;
+    metaPath: string;
+    platform: NodeJS.Platform;
+    windowsDrives: FileInfo[];
+    windowsDrivesLoading: boolean;
+}
+
+function DirectoryQuickAccessBar({
+    model,
+    bookmarks,
+    currentPath,
+    metaPath,
+    platform,
+    windowsDrives,
+    windowsDrivesLoading,
+}: DirectoryQuickAccessBarProps) {
+    const activeDrive = getWindowsDriveLabel(currentPath);
+    return (
+        <div className="dir-quick-access">
+            <div className="dir-quick-access-scroll">
+                {bookmarks.map((bookmark) => {
+                    const isActive =
+                        isSamePath(currentPath, bookmark.path, platform) ||
+                        isSamePath(metaPath, bookmark.path, platform);
+                    return (
+                        <button
+                            key={bookmark.path}
+                            type="button"
+                            className={clsx("dir-quick-access-chip", { active: isActive })}
+                            onClick={() => fireAndForget(() => model.goHistory(bookmark.path))}
+                            title={bookmark.label === "This PC" ? "Browse available drives" : bookmark.path}
+                        >
+                            {bookmark.icon ? <i className={`fa-solid fa-${bookmark.icon}`} /> : null}
+                            <span>{bookmark.label}</span>
+                        </button>
+                    );
+                })}
+                {windowsDrives.length > 0 ? <div className="dir-quick-access-divider" /> : null}
+                {windowsDrives.map((drive) => {
+                    const driveLabel = getWindowsDriveLabel(drive.path);
+                    const isActive = activeDrive !== "" && activeDrive === driveLabel;
+                    return (
+                        <button
+                            key={drive.path}
+                            type="button"
+                            className={clsx("dir-quick-access-chip", "drive-chip", { active: isActive })}
+                            onClick={() => fireAndForget(() => model.goHistory(drive.path))}
+                            title={drive.path}
+                        >
+                            <i className="fa-solid fa-hard-drive" />
+                            <span>{driveLabel}</span>
+                        </button>
+                    );
+                })}
+                {windowsDrivesLoading ? <span className="dir-quick-access-status">Detecting drives...</span> : null}
+            </div>
+        </div>
+    );
+}
 
 interface DirectoryTableHeaderCellProps {
     header: Header<FileInfo, unknown>;
@@ -161,7 +275,11 @@ function DirectoryTable({
                 sortingFn: "alphanumeric",
             }),
             columnHelper.accessor("modtime", {
-                cell: (info) => <span className="dir-table-lastmod">{getLastModifiedTime(info.getValue())}</span>,
+                cell: (info) => (
+                    <span className="dir-table-lastmod">
+                        {info.getValue() == null ? "-" : getLastModifiedTime(info.getValue())}
+                    </span>
+                ),
                 header: () => <span>Last Modified</span>,
                 size: 91,
                 minSize: 65,
@@ -367,7 +485,27 @@ function TableBody({
             if (finfo == null) {
                 return;
             }
-            const fileName = finfo.path.split("/").pop();
+            const fileName = finfo.path.split(/[\\/]+/).pop() || finfo.path;
+            if (isSyntheticDriveEntry(finfo)) {
+                const menu: ContextMenuItem[] = [
+                    {
+                        label: `Open ${finfo.name || fileName}`,
+                        click: () => {
+                            void model.goHistory(finfo.path);
+                        },
+                    },
+                    {
+                        type: "separator",
+                    },
+                    {
+                        label: "Copy Full File Name",
+                        click: () => fireAndForget(() => navigator.clipboard.writeText(finfo.path)),
+                    },
+                ];
+                addOpenMenuItems(menu, conn, finfo);
+                ContextMenuModel.getInstance().showContextMenu(menu, e);
+                return;
+            }
             const menu: ContextMenuItem[] = [
                 {
                     label: "New File",
@@ -426,7 +564,7 @@ function TableBody({
             );
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
-        [setRefreshVersion, conn]
+        [conn, model, setErrorMsg, table]
     );
 
     const allRows = table.getRowModel().flatRows;
@@ -511,7 +649,7 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
     const [_, drag] = useDrag(
         () => ({
             type: "FILE_ITEM",
-            canDrag: true,
+            canDrag: !isSyntheticDriveEntry(row.original),
             item: () => dragItem,
         }),
         [dragItem]
@@ -570,9 +708,22 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const [refreshVersion, setRefreshVersion] = useAtom(model.refreshVersion);
     const conn = useAtomValue(model.connection);
     const blockData = useAtomValue(model.blockAtom);
+    const metaPath = useAtomValue(model.metaFilePath);
     const finfo = useAtomValue(model.statFile);
     const dirPath = finfo?.path;
+    const currentPath = dirPath ?? metaPath;
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
+    const [windowsDrives, setWindowsDrives] = useState<FileInfo[]>([]);
+    const [windowsDrivesLoading, setWindowsDrivesLoading] = useState(false);
+    const isWindowsContext = useMemo(
+        () => isWindowsFilesystemContext(env.platform, conn, currentPath),
+        [conn, currentPath, env.platform]
+    );
+    const isVirtualDirectory = isWindowsDrivesVirtualPath(currentPath);
+    const directoryBookmarks = useMemo(
+        () => getDirectoryBookmarks(env.platform, conn, currentPath),
+        [conn, currentPath, env.platform]
+    );
 
     useEffect(() => {
         model.refreshCallback = () => {
@@ -583,26 +734,56 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         };
     }, [setRefreshVersion]);
 
+    useEffect(() => {
+        let disposed = false;
+        if (!isWindowsContext) {
+            setWindowsDrives([]);
+            setWindowsDrivesLoading(false);
+            return;
+        }
+        setWindowsDrivesLoading(true);
+        fireAndForget(async () => {
+            const driveEntries = await discoverWindowsDrives(model, env);
+            if (disposed) {
+                return;
+            }
+            setWindowsDrives(driveEntries);
+            setWindowsDrivesLoading(false);
+        });
+        return () => {
+            disposed = true;
+        };
+    }, [conn, env, isWindowsContext, model, refreshVersion]);
+
     useEffect(
-        () =>
+        () => {
+            let disposed = false;
             fireAndForget(async () => {
                 const entries: FileInfo[] = [];
                 try {
-                    const remotePath = await model.formatRemoteUri(dirPath, globalStore.get);
-                    const stream = env.rpc.FileListStreamCommand(TabRpcClient, { path: remotePath }, null);
-                    for await (const chunk of stream) {
-                        if (chunk?.fileinfo) {
-                            entries.push(...chunk.fileinfo);
+                    if (isVirtualDirectory) {
+                        entries.push(...windowsDrives);
+                    } else {
+                        const remotePath = await model.formatRemoteUri(dirPath, globalStore.get);
+                        const stream = env.rpc.FileListStreamCommand(TabRpcClient, { path: remotePath }, null);
+                        for await (const chunk of stream) {
+                            if (chunk?.fileinfo) {
+                                entries.push(...chunk.fileinfo);
+                            }
                         }
-                    }
-                    if (finfo?.dir && finfo?.path !== finfo?.dir) {
-                        entries.unshift({
-                            name: "..",
-                            path: finfo.dir,
-                            isdir: true,
-                            modtime: new Date().getTime(),
-                            mimetype: "directory",
-                        });
+                        let parentPath = finfo?.dir;
+                        if (isWindowsDriveRoot(finfo?.path)) {
+                            parentPath = WINDOWS_DRIVES_VIRTUAL_PATH;
+                        }
+                        if (parentPath && finfo?.path !== parentPath) {
+                            entries.unshift({
+                                name: "..",
+                                path: parentPath,
+                                isdir: true,
+                                modtime: new Date().getTime(),
+                                mimetype: "directory",
+                            });
+                        }
                     }
                 } catch (e) {
                     console.error("Directory Read Error", e);
@@ -611,9 +792,15 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                         text: `${e}`,
                     });
                 }
-                setUnfilteredData(entries);
-            }),
-        [conn, dirPath, refreshVersion]
+                if (!disposed) {
+                    setUnfilteredData(entries);
+                }
+            });
+            return () => {
+                disposed = true;
+            };
+        },
+        [conn, dirPath, env.rpc, finfo?.dir, finfo?.path, isVirtualDirectory, model, refreshVersion, windowsDrives]
     );
 
     const filteredData = useMemo(
@@ -760,6 +947,9 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         () => ({
             accept: "FILE_ITEM", //a name of file drop type
             canDrop: (_, monitor) => {
+                if (isVirtualDirectory) {
+                    return false;
+                }
                 const dragItem = monitor.getItem<DraggedFile>();
                 // drop if not current dir is the parent directory of the dragged item
                 // requires absolute path
@@ -769,7 +959,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 return false;
             },
             drop: async (draggedFile: DraggedFile, monitor) => {
-                if (!monitor.didDrop()) {
+                if (!monitor.didDrop() && !isVirtualDirectory) {
                     const timeoutYear = 31536000000; // one year
                     const opts: FileCopyOpts = {
                         timeout: timeoutYear,
@@ -785,7 +975,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             },
             // TODO: mabe add a hover option?
         }),
-        [dirPath, model.formatRemoteUri, model.refreshCallback]
+        [dirPath, handleDropCopy, isVirtualDirectory, model]
     );
 
     useEffect(() => {
@@ -796,6 +986,9 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const { getReferenceProps, getFloatingProps } = useInteractions([dismiss]);
 
     const newFile = useCallback(() => {
+        if (isVirtualDirectory) {
+            return;
+        }
         setEntryManagerProps({
             entryManagerType: EntryManagerType.NewFile,
             onSave: (newName: string) => {
@@ -815,8 +1008,11 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 setEntryManagerProps(undefined);
             },
         });
-    }, [dirPath]);
+    }, [dirPath, env.rpc, isVirtualDirectory, model, setEntryManagerProps]);
     const newDirectory = useCallback(() => {
+        if (isVirtualDirectory) {
+            return;
+        }
         setEntryManagerProps({
             entryManagerType: EntryManagerType.NewDirectory,
             onSave: (newName: string) => {
@@ -832,34 +1028,50 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 setEntryManagerProps(undefined);
             },
         });
-    }, [dirPath]);
+    }, [dirPath, env.rpc, isVirtualDirectory, model, setEntryManagerProps]);
 
     const handleFileContextMenu = useCallback(
         (e: any) => {
             e.preventDefault();
             e.stopPropagation();
-            const menu: ContextMenuItem[] = [
-                {
-                    label: "New File",
-                    click: () => {
-                        newFile();
+            const menu: ContextMenuItem[] = [];
+            if (!isVirtualDirectory) {
+                menu.push(
+                    {
+                        label: "New File",
+                        click: () => {
+                            newFile();
+                        },
                     },
-                },
-                {
-                    label: "New Folder",
-                    click: () => {
-                        newDirectory();
+                    {
+                        label: "New Folder",
+                        click: () => {
+                            newDirectory();
+                        },
                     },
+                    {
+                        type: "separator",
+                    }
+                );
+                addOpenMenuItems(menu, conn, finfo);
+            }
+            menu.push(
+                {
+                    label: "Refresh",
+                    click: () => model.refreshCallback?.(),
                 },
                 {
                     type: "separator",
                 },
-            ];
-            addOpenMenuItems(menu, conn, finfo);
+                {
+                    label: "Default Settings",
+                    submenu: makeDirectoryDefaultMenuItems(model),
+                }
+            );
 
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
-        [setRefreshVersion, conn, newFile, newDirectory, dirPath]
+        [conn, finfo, isVirtualDirectory, model, newDirectory, newFile]
     );
 
     return (
@@ -877,6 +1089,17 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 onContextMenu={(e) => handleFileContextMenu(e)}
                 onClick={() => setEntryManagerProps(undefined)}
             >
+                {isWindowsContext ? (
+                    <DirectoryQuickAccessBar
+                        model={model}
+                        bookmarks={directoryBookmarks}
+                        currentPath={currentPath}
+                        metaPath={metaPath}
+                        platform={env.platform}
+                        windowsDrives={windowsDrives}
+                        windowsDrivesLoading={windowsDrivesLoading}
+                    />
+                ) : null}
                 <DirectoryTable
                     model={model}
                     data={filteredData}

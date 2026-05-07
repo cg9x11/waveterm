@@ -56,4 +56,20 @@ describe("webview preview fallback", () => {
         expect(globalStore.get(env.getSettingsKeyAtom("web:defaulturl"))).toBe("https://global.example");
         expect(globalStore.get(env.wos.getWaveObjectAtom<Block>(`block:${blockId}`))?.meta?.pinnedurl).toBeUndefined();
     });
+
+    it("falls back to Google home when the default setting is missing", () => {
+        const blockId = "webview-default-home-block";
+        const env = makeMockWaveEnv();
+        const model = new WebViewModel({
+            blockId,
+            nodeModel: {
+                isFocused: atom(true),
+                focusNode: () => {},
+            } as any,
+            tabModel: {} as any,
+            waveEnv: env,
+        });
+
+        expect(globalStore.get(model.homepageUrl)).toBe("https://www.google.com/webhp");
+    });
 });

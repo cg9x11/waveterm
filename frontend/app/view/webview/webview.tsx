@@ -30,6 +30,7 @@ const USER_AGENT_IPHONE =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 const USER_AGENT_ANDROID =
     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.43 Mobile Safari/537.36";
+const DEFAULT_WEB_HOME_URL = "https://www.google.com/webhp";
 
 let webviewPreloadUrl = null;
 
@@ -87,9 +88,9 @@ export class WebViewModel implements ViewModel {
         this.url = atom();
         const defaultUrlAtom = this.env.getSettingsKeyAtom("web:defaulturl");
         this.homepageUrl = atom((get) => {
-            const defaultUrl = get(defaultUrlAtom);
+            const defaultUrl = get(defaultUrlAtom) ?? DEFAULT_WEB_HOME_URL;
             const pinnedUrl = get(this.blockAtom)?.meta?.pinnedurl;
-            return pinnedUrl ?? defaultUrl;
+            return pinnedUrl ?? defaultUrl ?? DEFAULT_WEB_HOME_URL;
         });
         this.urlWrapperClassName = atom("");
         this.urlInputFocused = atom(false);

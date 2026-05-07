@@ -15,6 +15,7 @@ import { CodeEditPreview } from "./preview-edit";
 import { ErrorOverlay } from "./preview-error-overlay";
 import { MarkdownPreview } from "./preview-markdown";
 import type { PreviewModel } from "./preview-model";
+import { isWindowsDrivesVirtualPath } from "./preview-path-utils";
 import { StreamingPreview } from "./preview-streaming";
 import type { PreviewEnv } from "./previewenv";
 
@@ -83,9 +84,10 @@ const fetchSuggestions = async (
     if (fileInfo == null) {
         return null;
     }
+    const suggestionCwd = isWindowsDrivesVirtualPath(fileInfo.path) ? "~" : fileInfo.path;
     const sdata = {
         suggestiontype: "file",
-        "file:cwd": fileInfo.path,
+        "file:cwd": suggestionCwd,
         query: query,
         widgetid: reqContext.widgetid,
         reqnum: reqContext.reqnum,
